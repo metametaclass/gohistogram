@@ -4,7 +4,16 @@ package gohistogram
 // Copyright (c) 2013 VividCortex, Inc. All rights reserved.
 // Please see the LICENSE file for applicable license terms.
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+
+	"sort"
+
+	"github.com/ventu-io/slf"
+)
+
+var log = slf.WithContext("gohistogram")
 
 // A WeightedHistogram implements Histogram. A WeightedHistogram has bins that have values
 // which are exponentially weighted moving averages. This allows you keep inserting large
@@ -12,8 +21,65 @@ import "fmt"
 type WeightedHistogram struct {
 	bins    []bin
 	maxbins int
-	total   float64
+	total   int64
 	alpha   float64
+}
+
+type histogramStateBin struct {
+	Value float64
+	Count float64
+}
+
+type histogramState struct {
+	Bins    []histogramStateBin
+	MaxBins int
+	Total   int64
+	Alpha   float64
+}
+
+//MarshalJSON implements json.Marshaller
+func (h *WeightedHistogram) MarshalJSON() ([]byte, error) {
+	hs := &histogramState{
+		Bins:    make([]histogramStateBin, len(h.bins), len(h.bins)),
+		MaxBins: h.maxbins,
+		Total:   h.total,
+		Alpha:   h.alpha,
+	}
+	for i, v := range h.bins {
+		hs.Bins[i] = histogramStateBin{
+			Value: v.value,
+			Count: v.count,
+		}
+	}
+	result, err := json.Marshal(hs)
+	if err != nil {
+		log.Errorf("MarshalJSON: %+v error %s", hs, err)
+		return nil, err
+	}
+	return result, nil
+}
+
+//UnmarshalJSON implements json.Unmarshaller
+func (h *WeightedHistogram) UnmarshalJSON(data []byte) error {
+	var hs histogramState
+	err := json.Unmarshal(data, &hs)
+	if err != nil {
+		return err
+	}
+
+	h.bins = make([]bin, len(hs.Bins), len(hs.Bins))
+	h.maxbins = hs.MaxBins
+	h.alpha = hs.Alpha
+	h.total = hs.Total
+
+	for i, v := range hs.Bins {
+		h.bins[i] = bin{
+			value: v.Value,
+			count: v.Count,
+		}
+	}
+
+	return nil
 }
 
 // NewWeightedHistogram returns a new WeightedHistogram with a maximum of n bins with a decay factor
@@ -22,9 +88,9 @@ type WeightedHistogram struct {
 // There is no "optimal" bin count, but somewhere between 20 and 80 bins should be
 // sufficient.
 //
-// Alpha should be set to 2 / (N+1), where N represents the average age of the moving window.
+// Alpha should be set to 1 - (2 / (N+1)), where N represents the average age of the moving window.
 // For example, a 60-second window with an average age of 30 seconds would yield an
-// alpha of 0.064516129.
+// alpha of 0.935483870967742.
 func NewWeightedHistogram(n int, alpha float64) *WeightedHistogram {
 	return &WeightedHistogram{
 		bins:    make([]bin, 0),
@@ -47,6 +113,7 @@ func (h *WeightedHistogram) scaleDown(except int) {
 	}
 }
 
+//Add adds value to histogram
 func (h *WeightedHistogram) Add(n float64) {
 	defer h.trim()
 	for i := range h.bins {
@@ -74,8 +141,9 @@ func (h *WeightedHistogram) Add(n float64) {
 	h.bins = append(h.bins, bin{count: 1, value: n})
 }
 
+// Quantile implements Histogram.Quantile and returns an approximation.
 func (h *WeightedHistogram) Quantile(q float64) float64 {
-	count := q * h.total
+	count := q * float64(h.total)
 	for i := range h.bins {
 		count -= float64(h.bins[i].count)
 
@@ -97,7 +165,7 @@ func (h *WeightedHistogram) CDF(x float64) float64 {
 		}
 	}
 
-	return count / h.total
+	return count / float64(h.total)
 }
 
 // Mean returns the sample mean of the distribution
@@ -112,7 +180,24 @@ func (h *WeightedHistogram) Mean() float64 {
 		sum += h.bins[i].value * h.bins[i].count
 	}
 
-	return sum / h.total
+	return sum / float64(h.total)
+}
+
+// Modes returns values for first n maximums from histogram
+func (h *WeightedHistogram) Modes(n int) []float64 {
+	result := make([]float64, 0)
+	if h.total == 0 {
+		return result
+	}
+	tmp := make([]bin, 0)
+	tmp = append(tmp, h.bins...)
+	sort.Slice(tmp, func(i, j int) bool {
+		return tmp[i].count >= tmp[j].count
+	})
+	for i := 0; i < n && i < len(tmp); i++ {
+		result = append(result, tmp[i].value)
+	}
+	return result
 }
 
 // Variance returns the variance of the distribution
@@ -128,10 +213,11 @@ func (h *WeightedHistogram) Variance() float64 {
 		sum += (h.bins[i].count * (h.bins[i].value - mean) * (h.bins[i].value - mean))
 	}
 
-	return sum / h.total
+	return sum / float64(h.total)
 }
 
-func (h *WeightedHistogram) Count() float64 {
+// Count returns approximate decayed data count
+func (h *WeightedHistogram) Count() int64 {
 	return h.total
 }
 
@@ -140,7 +226,7 @@ func (h *WeightedHistogram) trim() {
 	for i := range h.bins {
 		total += h.bins[i].count
 	}
-	h.total = total
+	h.total = int64(total)
 	for len(h.bins) > h.maxbins {
 
 		// Find closest bins in terms of value
@@ -158,13 +244,18 @@ func (h *WeightedHistogram) trim() {
 		}
 
 		// We need to merge bins minDeltaIndex-1 and minDeltaIndex
-		totalCount := h.bins[minDeltaIndex-1].count + h.bins[minDeltaIndex].count
+		b1 := h.bins[minDeltaIndex-1]
+		b2 := h.bins[minDeltaIndex]
+		totalCount := b1.count + b2.count
+		var newValue float64
+		if totalCount <= 1 {
+			newValue = (b1.value + b2.value) / 2
+		} else {
+			newValue = (b1.value*b1.count + b2.value*b2.count) / totalCount // weighted average
+		}
+		//log.Debugf("trim: %d %d %f %f", len(h.bins), minDeltaIndex, newValue, totalCount)
 		mergedbin := bin{
-			value: (h.bins[minDeltaIndex-1].value*
-				h.bins[minDeltaIndex-1].count +
-				h.bins[minDeltaIndex].value*
-					h.bins[minDeltaIndex].count) /
-				totalCount, // weighted average
+			value: newValue,
 			count: totalCount, // summed heights
 		}
 		head := append(make([]bin, 0), h.bins[0:minDeltaIndex-1]...)
@@ -187,4 +278,23 @@ func (h *WeightedHistogram) String() (str string) {
 	}
 
 	return
+}
+
+//BinsCount implements Histogram
+func (h *WeightedHistogram) BinsCount() int {
+	return len(h.bins)
+}
+
+//Bins implements Histogram
+func (h *WeightedHistogram) Bins(i int) (float64, float64) {
+	if i < 0 || i >= len(h.bins) {
+		return 0, 0
+	}
+	b := h.bins[i]
+	return b.count, b.value
+}
+
+//Alpha returns decay factor
+func (h *WeightedHistogram) Alpha() float64 {
+	return h.alpha
 }
