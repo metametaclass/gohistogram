@@ -15,6 +15,9 @@ type Histogram interface {
 	// String returns a string reprentation of the histogram,
 	// which is useful for printing to a terminal.
 	String() (str string)
+
+	BinsCount() int
+	Bins(i int) (float64, float64)
 }
 
 type bin struct {
