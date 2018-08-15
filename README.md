@@ -1,7 +1,5 @@
 # gohistogram - Histograms in Go
 
-![build status](https://circleci.com/gh/VividCortex/gohistogram.png?circle-token=d37ec652ea117165cd1b342400a801438f575209)
-
 This package provides [Streaming Approximate Histograms](https://vividcortex.com/blog/2013/07/08/streaming-approximate-histograms/)
 for efficient quantile approximations.
 
@@ -30,9 +28,6 @@ A maximum bin size is passed as an argument to the constructor methods. A
 larger bin size yields more accurate approximations at the cost of increased
 memory utilization and performance.
 
-A picture of kittens:
-
-![stack of kittens](http://i.imgur.com/QxRTWAE.jpg)
 
 ## Getting started
 
