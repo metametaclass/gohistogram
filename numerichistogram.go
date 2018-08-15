@@ -7,6 +7,7 @@ import (
 	"fmt"
 )
 
+//NumericHistogram implements simple Histogram without decay
 type NumericHistogram struct {
 	bins    []bin
 	maxbins int
@@ -25,6 +26,7 @@ func NewHistogram(n int) *NumericHistogram {
 	}
 }
 
+//Add implements Histogram.Add and feeds value to NumericHistogram
 func (h *NumericHistogram) Add(n float64) {
 	defer h.trim()
 	h.total++
@@ -49,6 +51,7 @@ func (h *NumericHistogram) Add(n float64) {
 	h.bins = append(h.bins, bin{count: 1, value: n})
 }
 
+// Quantile implements Histogram.Quantile and returns an approximation.
 func (h *NumericHistogram) Quantile(q float64) float64 {
 	count := q * float64(h.total)
 	for i := range h.bins {
@@ -106,6 +109,7 @@ func (h *NumericHistogram) Variance() float64 {
 	return sum / float64(h.total)
 }
 
+//Count returns count of values
 func (h *NumericHistogram) Count() float64 {
 	return float64(h.total)
 }
